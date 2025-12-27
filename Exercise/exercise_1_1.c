@@ -1,9 +1,14 @@
+#include "mpi.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
 
 #include <math.h>
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#else
 #include <cblas.h>
+#endif
 
 #include "array.h"
 
@@ -110,14 +115,71 @@ static bool test_DDOT(int const n, BLAS_DDOT dot, double const epsilon, unsigned
 
 // In the implementation of functions "DAXPY" and "DDOT" replace the call to
 // the corresponding BLAS function with your own implementation.
+// y = alpha * x + y
 void DAXPY(int const n, double const alpha, double* const x, int const incx, double* const y, int const incy)
 {
-    cblas_daxpy(n, alpha, x, incx, y, incy);
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int const base_count = n / size;
+    int const remainder = n % size;
+
+    // MAGICAL DISTRIBUTION OF WORK
+    // -- Number of elements for current rank
+    int const local_count = base_count + (rank < remainder ? 1: 0);
+    // -- Global starting index for current rank
+    int const global_start = rank * base_count + (rank < remainder ? rank : remainder);
+
+    // Local y = alpha * x + y Calculation
+    for (int i = 0; i < local_count; i++) {
+        int const global_idx = global_start + i;
+        y[global_idx * incy] = alpha * x[global_idx * incx] + y[global_idx * incy];
+    }
+
+    // In order to gather different result chunks from different ranks, I will use Allgatherv
+    // which is similar to Allgather but "varied" message sizes
+    int* sendcounts = (int*)malloc(size * sizeof(int));
+    int* displs = (int*)malloc(size * sizeof(int));
+
+    for (int i = 0; i < size; i++) {
+        sendcounts[i] = base_count + (i < remainder ? 1 : 0); 
+        displs[i] = i * base_count + (i < remainder ? i : remainder);
+    }
+
+    // Here we can use MPI_IN_PLACE option, since the test cases are using **incy == 1**. (NO STRIDE)
+    // Each process has already written to its portion of y (This is more performant obviously)
+    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, y, sendcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD);
+
+    free(sendcounts);
+    free(displs);
 }
 
 double DDOT(int const n, double* const x, int const incx, double* const y, int const incy)
 {
-    return cblas_ddot(n, x, incx, y, incy);
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int const base_count = n / size;
+    int const remainder = n % size;
+
+    // Work Distribution is same as DAXPY above -----^
+    int const local_count = base_count + (rank < remainder ? 1: 0);
+    int const global_start = rank * base_count + (rank < remainder ? rank : remainder);
+
+    double local_dot = 0.0;
+    for (int i = 0; i < local_count; i++) {
+        int const global_index = global_start + i;
+        local_dot += x[global_index * incx] * y[global_index * incy];
+    }
+
+    double global_dot = 0.0;
+
+    // To reduce all the local_dots from all the ranks, I will use MPI_Allreduce
+    MPI_Allreduce(&local_dot, &global_dot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    return global_dot;
 }
 
 static bool generate_operand_dimension(int* const n)
@@ -138,6 +200,7 @@ static bool generate_operand_dimension(int* const n)
 
 int main(int argc, char* argv[])
 {
+    MPI_Init(&argc, &argv);
     bool all_tests_pass = true;
 
     int n = 0;
@@ -154,6 +217,8 @@ int main(int argc, char* argv[])
             all_tests_pass = false;
         }
     }
+
+    MPI_Finalize();
 
     if (!all_tests_pass) {
         return EXIT_FAILURE;
