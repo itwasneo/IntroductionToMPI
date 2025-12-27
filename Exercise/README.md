@@ -1,5 +1,24 @@
 # Final Exercise Parallel Programming with MPI
 
+### COMPILATION AND RUN
+
+On HPC I used the following modules:
+```bash
+module load lib/FlexiBLAS/3.3.1-GCC-13.2.0
+module load mpi/OpenMPI/4.1.6-GCC-13.2.0
+```
+
+For compilation:
+```bash
+mpicc -I../Examples/utils exercise_2_1.c ../Examples/utils/array.c ../Examples/utils/multiply.c -o exercise_2_1 -lflexiblas -lm
+```
+
+For MPI run:
+```bash
+mpirun -np 128 ./exercise_1_3
+```
+
+
 ### The exercise must me sent by email to matteo.barborini@uni.lu and georgios.kafanas@uni.lu before the 13th of January 2026.
 
 __For any questions regarding the exercises please write to us!__
